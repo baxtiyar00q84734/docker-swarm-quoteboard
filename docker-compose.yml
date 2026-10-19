@@ -1,0 +1,64 @@
+# Quote Board - Docker Swarm stack
+# Deploy with:  docker stack deploy -c docker-compose.yml quotes
+version: "3.8"
+
+services:
+
+  # ---------- Service 1: the web app (our own image, built from web/Dockerfile) ----------
+  web:
+    image: quoteboard-web:1.0          # Swarm does NOT build images, so we build this first
+    build: ./web                       # used only by "docker compose build"; ignored by Swarm
+    ports:
+      - "8000:5000"                    # host port 8000 -> container port 5000 (routing mesh)
+    environment:
+      REDIS_HOST: redis                # service name = DNS name inside the overlay network
+      APP_COLOR: "#2563eb"
+    networks:
+      - quotenet
+    deploy:
+      replicas: 3                      # <-- THE NUMBER WE SCALE UP AND DOWN
+      update_config:
+        parallelism: 1                 # rolling update: one replica at a time
+        delay: 5s
+      restart_policy:
+        condition: on-failure          # if a container crashes, Swarm starts a new one
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  # ---------- Service 2: Redis database (stores the quotes and the view counter) ----------
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]   # save data to disk
+    volumes:
+      - redis-data:/data               # named volume, data survives container restarts
+    networks:
+      - quotenet
+    deploy:
+      replicas: 1                      # a database stays at 1 replica (one source of truth)
+      placement:
+        constraints:
+          - node.role == manager       # keep it on the manager, where its volume lives
+      restart_policy:
+        condition: on-failure
+
+  # ---------- Service 3: Visualizer (live picture of the swarm, for the demo) ----------
+  visualizer:
+    image: dockersamples/visualizer:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # lets it read swarm state
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager       # it must talk to a manager node
+
+networks:
+  quotenet:
+    driver: overlay                    # overlay = a network that spans all swarm nodes
+
+volumes:
+  redis-data:
